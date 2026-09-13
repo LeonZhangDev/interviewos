@@ -24,3 +24,10 @@ dev = [
 
 [tool.uv]
 package = false
+# Pin the registry at project level (overrides the user-level mirror in
+# %APPDATA%\uv\uv.toml): uv.lock bakes index URLs into every package entry,
+# so a China-mirror lock intermittently 403s on GitHub's US CI runners.
+# pypi.org stays reachable from China; uv's local cache absorbs re-syncs.
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
