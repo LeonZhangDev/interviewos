@@ -1,0 +1,120 @@
+# CI gates for InterviewOS v1.0.
+#
+# Push/PR run the fast lanes: backend pytest (offline SQLite suite), frontend
+# tsc/vitest/build, then docker compose image build. The Playwright E2E lane
+# needs the full docker compose stack and is therefore nightly + manual only
+# (the same webServer flow `make frontend-e2e` uses locally).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 18 * * *" # 02:00 Beijing time
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (compile + pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Syntax check backend + runner
+        run: uv run python -m compileall -q app ../runner
+
+      - name: "Test suite (offline: SQLite + closed Redis port)"
+        run: uv run pytest
+
+  frontend:
+    name: Frontend (tsc + vitest + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Unit / component tests
+        run: npm run test:run
+
+      - name: Production build
+        run: npm run build
+
+  docker:
+    name: Docker (compose config + image build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate compose file
+        run: docker compose config --quiet
+
+      - name: Build all images (backend / frontend / runner / sandboxes)
+        run: docker compose build
+
+  e2e:
+    name: E2E (Playwright + docker compose stack)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E (webServer boots docker compose backend + vite)
+        run: npx playwright test
+
+      - name: Dump compose stack logs on failure
+        if: failure()
+        working-directory: .
+        run: docker compose logs --tail 200

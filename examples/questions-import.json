@@ -1,0 +1,19 @@
+[
+  {
+    "category": "Python",
+    "title": "生成器和迭代器是什么关系？",
+    "difficulty": 2,
+    "answer": "迭代器实现迭代协议并逐个返回元素；生成器是创建迭代器的一种简洁方式，函数中使用 yield 后会返回生成器对象，并在每次迭代时从上一次暂停位置继续执行。",
+    "code": "def numbers():\n    yield 1\n    yield 2\n\nfor x in numbers():\n    print(x)",
+    "followups": "yield 和 return 有什么区别？|生成器为什么节省内存？",
+    "project_link": ""
+  },
+  {
+    "category": "Agent",
+    "title": "为什么高风险 Agent 需要审批边界？",
+    "difficulty": 3,
+    "answer": "LLM 输出具有非确定性，高风险动作不能只依赖提示词约束。应先生成结构化计划，经校验、权限判断和必要的人类审批后，再交给确定性执行器，并记录审计日志与幂等标识。",
+    "followups": "审批后 Plan 可以被修改吗？|重试怎样避免重复副作用？",
+    "project_link": "AtlasSplit"
+  }
+]

@@ -1,0 +1,138 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: interviewos
+      POSTGRES_PASSWORD: interviewos
+      POSTGRES_DB: interviewos
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - interviewos_pg:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U interviewos -d interviewos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  runner:
+    build: ./runner
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    pids_limit: 64
+    mem_limit: 192m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # v1.0 P1 playground sandboxes — dedicated instances on the internal
+      # network only; never the main db / redis.
+      SANDBOX_DATABASE_URL: postgresql://sandbox:sandbox@sandbox-db:5432/sandbox
+      SANDBOX_REDIS_URL: redis://sandbox-redis:6379/0
+    depends_on:
+      sandbox-db:
+        condition: service_healthy
+      sandbox-redis:
+        condition: service_started
+    networks:
+      - internal
+
+  sandbox-db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: sandbox
+      POSTGRES_PASSWORD: sandbox
+      POSTGRES_DB: sandbox
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sandbox -d sandbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+
+  sandbox-redis:
+    image: redis:8-alpine
+    # Ephemeral in-memory cache: no persistence, capped, with enough logical
+    # databases for concurrent playground sessions (db 0 reserved, 1..63 used).
+    command: ["redis-server", "--databases", "64", "--save", "", "--appendonly", "no", "--maxmemory", "96mb", "--maxmemory-policy", "allkeys-lru"]
+    networks:
+      - internal
+
+  backend:
+    build: ./backend
+    healthcheck:
+      # Blocks `docker compose up --wait` until uvicorn actually serves /health
+      # (after the entrypoint's alembic upgrade), so e.g. Playwright webServer
+      # never races a booting backend.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    environment:
+      DATABASE_URL: postgresql+asyncpg://interviewos:interviewos@db:5432/interviewos
+      REDIS_URL: redis://redis:6379/0
+      RUNNER_URL: http://runner:8001
+      CORS_ORIGINS: http://localhost:5173
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      AUTH_SECRET: ${AUTH_SECRET:-change-this-before-public-deploy}
+      AUTH_TOKEN_MINUTES: ${AUTH_TOKEN_MINUTES:-30}
+      AUTH_REFRESH_DAYS: ${AUTH_REFRESH_DAYS:-14}
+      RECORDINGS_DIR: /data/recordings
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GITEE_CLIENT_ID: ${GITEE_CLIENT_ID:-}
+      GITEE_CLIENT_SECRET: ${GITEE_CLIENT_SECRET:-}
+      OAUTH_ENCRYPTION_KEY: ${OAUTH_ENCRYPTION_KEY:-}
+      OAUTH_REDIRECT_BASE: ${OAUTH_REDIRECT_BASE:-http://localhost:5173}
+      # v1.0 observability: structured logs (json|text) and optional error
+      # tracking. Blank SENTRY_DSN = zero overhead, no third-party calls.
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    ports:
+      - "127.0.0.1:${BACKEND_HOST_PORT:-8000}:8000"
+    volumes:
+      - interviewos_recordings:/data/recordings
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      runner:
+        condition: service_started
+    networks:
+      - default
+      - internal
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    environment:
+      VITE_API_PROXY: http://backend:8000
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  interviewos_pg:
+  frontend_node_modules:
+  interviewos_recordings:
+
+networks:
+  internal:
+    internal: true
